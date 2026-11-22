@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from .broker import CLOSED, Broker
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+INSTANCE = os.getenv("INSTANCE", "local")  # which replica this process is
 HEARTBEAT_SECONDS = 15
 STATUS_TTL_SECONDS = 3600
 TERMINAL_STATUSES = {"completed", "failed"}
@@ -70,7 +71,9 @@ async def process_order(order_id: str) -> None:
             tx.set(status_key(order_id), status, ex=STATUS_TTL_SECONDS)  # 1. source of truth
             tx.publish(  # 2. then nudge whoever is listening
                 channel(order_id),
-                json.dumps({"order_id": order_id, "status": status}),
+                json.dumps(
+                    {"order_id": order_id, "status": status, "published_by": INSTANCE}
+                ),
             )
             await tx.execute()
 
@@ -88,7 +91,7 @@ async def create_order(background: BackgroundTasks):
     order_id = uuid.uuid4().hex[:8]
     await r.set(status_key(order_id), "pending", ex=STATUS_TTL_SECONDS)
     background.add_task(process_order, order_id)
-    return {"order_id": order_id, "status": "pending"}
+    return {"order_id": order_id, "status": "pending", "handled_by": INSTANCE}
 
 
 @app.get("/api/orders/{order_id}")
@@ -113,7 +116,13 @@ async def order_event_stream(order_id: str) -> AsyncIterator[str]:
             if status is None:  # expired between the 404 check and now
                 return
             yield "retry: 3000\n\n" + sse_event(
-                "status", {"order_id": order_id, "status": status}
+                "status",
+                {
+                    "order_id": order_id,
+                    "status": status,
+                    "source": "snapshot",
+                    "streamed_by": INSTANCE,
+                },
             )
             if status in TERMINAL_STATUSES:
                 return
@@ -131,6 +140,9 @@ async def order_event_stream(order_id: str) -> AsyncIterator[str]:
                 if raw is CLOSED:  # broker lost Redis; the browser will reconnect
                     return
                 data = json.loads(raw)
+                # The update may have been published by another replica: Redis
+                # delivers it to every subscribed process, wherever it runs.
+                data |= {"source": "pubsub", "streamed_by": INSTANCE}
                 yield sse_event("status", data)
                 if data["status"] in TERMINAL_STATUSES:
                     return
@@ -145,5 +157,9 @@ async def order_events(order_id: str):
     return StreamingResponse(
         order_event_stream(order_id),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Instance": INSTANCE,
+        },
     )

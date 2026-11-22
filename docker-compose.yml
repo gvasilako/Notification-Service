@@ -1,3 +1,16 @@
+# Shared settings for every API replica.
+x-backend: &backend
+  build: ./backend
+  image: notification-service-backend
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+x-backend-env: &backend-env
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: http://localhost:3000
+
 services:
   redis:
     build: ./redis
@@ -10,24 +23,31 @@ services:
       retries: 5
     restart: unless-stopped
 
-  backend:
-    build: ./backend
+  # Two identical API replicas behind nginx. Host ports exist only so you can
+  # talk to one replica directly while experimenting.
+  backend-1:
+    <<: *backend
     environment:
-      REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: http://localhost:3000
+      <<: *backend-env
+      INSTANCE: backend-1
     ports:
-      - "8000:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      - "8001:8000"
+
+  backend-2:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      INSTANCE: backend-2
+    ports:
+      - "8002:8000"
 
   frontend:
     build: ./frontend
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      - backend-1
+      - backend-2
     restart: unless-stopped
 
 volumes:

@@ -8,8 +8,8 @@ const STATUS_COLORS = {
   failed: "#e53935",
 };
 
-function OrderCard({ orderId, placedAt }) {
-  const { history, connection } = useOrderEvents(orderId);
+function OrderCard({ orderId, placedAt, handledBy }) {
+  const { history, connection, streamedBy } = useOrderEvents(orderId);
   const current = history.at(-1)?.status ?? "…";
 
   return (
@@ -29,13 +29,17 @@ function OrderCard({ orderId, placedAt }) {
         </span>
       </div>
       <div style={{ fontSize: "0.8rem", color: "#666", margin: "0.25rem 0 0.5rem" }}>
-        stream: {connection}
+        placed via {handledBy} · stream: {connection}
+        {streamedBy && <> via {streamedBy}</>}
       </div>
       <ol style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.9rem" }}>
-        {history.map(({ status, at }) => (
+        {history.map(({ status, at, source, publishedBy }) => (
           <li key={status + at.getTime()}>
             {status}{" "}
-            <span style={{ color: "#888" }}>+{((at - placedAt) / 1000).toFixed(1)}s</span>
+            <span style={{ color: "#888" }}>
+              +{((at - placedAt) / 1000).toFixed(1)}s ·{" "}
+              {source === "pubsub" ? `published by ${publishedBy}` : "snapshot"}
+            </span>
           </li>
         ))}
       </ol>
@@ -52,8 +56,8 @@ export default function App() {
     try {
       const res = await fetch("/api/orders", { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { order_id } = await res.json();
-      setOrders((o) => [{ orderId: order_id, placedAt: new Date() }, ...o]);
+      const { order_id, handled_by } = await res.json();
+      setOrders((o) => [{ orderId: order_id, placedAt: new Date(), handledBy: handled_by }, ...o]);
     } catch (e) {
       setError(`Could not place order: ${e.message}`);
     }
@@ -68,8 +72,8 @@ export default function App() {
       <button onClick={placeOrder}>Place order</button>
       {error && <p style={{ color: "#e53935" }}>{error}</p>}
       <ul style={{ listStyle: "none", padding: 0, marginTop: "1rem" }}>
-        {orders.map(({ orderId, placedAt }) => (
-          <OrderCard key={orderId} orderId={orderId} placedAt={placedAt} />
+        {orders.map(({ orderId, placedAt, handledBy }) => (
+          <OrderCard key={orderId} orderId={orderId} placedAt={placedAt} handledBy={handledBy} />
         ))}
       </ul>
     </main>

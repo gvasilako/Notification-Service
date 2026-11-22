@@ -14,11 +14,16 @@ const BACKOFF_MAX_MS = 30_000;
  * exponential backoff + jitter. A watchdog on the server's ping events catches
  * connections that died silently.
  *
- * Returns { history: [{ status, at }], connection: string }.
+ * Returns {
+ *   history: [{ status, at, source, publishedBy }],
+ *   connection: string,
+ *   streamedBy: replica serving the current stream,
+ * }.
  */
 export function useOrderEvents(orderId) {
   const [history, setHistory] = useState([]);
   const [connection, setConnection] = useState("connecting");
+  const [streamedBy, setStreamedBy] = useState(null);
 
   useEffect(() => {
     let es = null;
@@ -80,11 +85,14 @@ export function useOrderEvents(orderId) {
 
       es.addEventListener("status", (e) => {
         resetWatchdog();
-        const { status } = JSON.parse(e.data);
+        const { status, source, published_by, streamed_by } = JSON.parse(e.data);
+        setStreamedBy(streamed_by);
         // The snapshot sent on (re)connect may repeat the last status: that's
         // expected, since the server sends state, not deltas.
         setHistory((h) =>
-          h.at(-1)?.status === status ? h : [...h, { status, at: new Date() }]
+          h.at(-1)?.status === status
+            ? h
+            : [...h, { status, at: new Date(), source, publishedBy: published_by }]
         );
         // Close before the server does, or EventSource would reconnect.
         if (TERMINAL.has(status)) finish("done");
@@ -108,5 +116,5 @@ export function useOrderEvents(orderId) {
     };
   }, [orderId]);
 
-  return { history, connection };
+  return { history, connection, streamedBy };
 }
