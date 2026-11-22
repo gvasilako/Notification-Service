@@ -118,13 +118,15 @@ async def order_event_stream(order_id: str) -> AsyncIterator[str]:
             if status in TERMINAL_STATUSES:
                 return
 
-            # 3. Live updates from our mailbox, with a heartbeat comment when
-            #    idle so proxies and load balancers don't drop the connection.
+            # 3. Live updates from our mailbox, with a heartbeat when idle. It
+            #    keeps proxies from dropping the connection, and it is a real
+            #    event (not a ": comment", which JS never sees) so the browser
+            #    can run a watchdog and detect a dead connection.
             while True:
                 try:
                     raw = await asyncio.wait_for(mailbox.get(), HEARTBEAT_SECONDS)
                 except TimeoutError:
-                    yield ": ping\n\n"
+                    yield sse_event("ping", {})
                     continue
                 if raw is CLOSED:  # broker lost Redis; the browser will reconnect
                     return
