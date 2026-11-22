@@ -203,8 +203,22 @@ docker-compose.yml         Redis, two API replicas, frontend
 ## Possible next steps
 
 - HTTP/2 at nginx, so several tabs on detail pages don't share the browser's 6
-  HTTP/1.1 connections; and one stream per user, if the list should update
-  live too.
+  HTTP/1.1 connections.
+- A live order list for logged-in users. One SSE stream per user
+  (`GET /api/me/events`) sends only a `changed` signal; on each signal, and on
+  every (re)connect, the list page refetches all the user's orders from a list
+  endpoint, which stays the only source of truth. It needs:
+  - auth, so every request (the stream included) maps to a user;
+  - an owner on each order, a per-user order index and the list endpoint;
+  - the worker publishing every change, and order creation, to `user:{uid}`;
+  - on the client, at most one fetch in flight with one queued, so a burst of
+    updates causes one or two refetches, and responses can't arrive out of
+    order.
+
+  Signals carry no state, so a dropped one is harmless: the next fetch returns
+  everything. The cost is one list request per change per open tab, which is
+  fine for tens of orders; with hundreds, page the list or return only active
+  and recent ones.
 - Automated tests for the subscriber: the subscribe/snapshot race, reference
   counting, slow clients, Redis reconnects.
 - A load test with thousands of concurrent streams.
