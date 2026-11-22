@@ -39,7 +39,7 @@ deliberately minimal:
 | SSE endpoint, subscription handling, reconnects, multiple replicas | **Built to production standard** | Same |
 | Order "database" | A Redis key per order, `order:{id}:status`, with a 1h TTL | Postgres or similar |
 | Workers | A FastAPI `BackgroundTasks` function that sleeps and changes the status | Separate workers with a durable queue |
-| UI | A small React page | Your app |
+| UI | A small React app: order list and order detail page | Your app |
 
 One consequence of the mocked worker: if an API process dies, the background
 task running inside it dies too, and that order stays stuck. The SSE side copes
@@ -76,6 +76,14 @@ nginx while a backend is down. The client (`useOrderEvents`) takes over in that
 case: exponential backoff with jitter, and a check for a deleted order (404).
 The stream is closed on `completed` or `failed`, so finished orders don't
 reconnect forever.
+
+**Stream only what the user is looking at.** The order list loads each order's
+status once, with a plain request. Only the order detail page opens an SSE
+stream, and leaving the page closes it. A tab therefore holds at most one
+stream. That matters because over HTTP/1.1 a browser allows about 6
+connections per host, shared by all its tabs: a stream per order in a list
+would use them up after a few open orders, and every other request, even the
+next page load, would wait behind them.
 
 **Proxy and deploy settings.** nginx doesn't buffer the stream, keeps it open
 for up to 1h, and gives up connecting to a dead replica after 2s instead of
@@ -129,9 +137,11 @@ docker compose up -d --build
 | `backend-1` directly | http://localhost:8001 |
 | `backend-2` directly | http://localhost:8002 |
 
-Open http://localhost:3000 and click **Place order**. Each card shows the live
-status timeline, plus which replica placed the order, streams it and published
-each update.
+Open http://localhost:3000 and click **Place order**. You land on the order's
+detail page, which shows the live status timeline, plus which replica placed
+the order, streams it and published each update. **← All orders** goes back to
+the list, which shows each order's status as of when the list loaded (use
+**Refresh** to reload it). The list is kept in the browser's `localStorage`.
 
 Stop everything with `docker compose down`. Add `-v` to also delete the Redis
 data.
@@ -151,12 +161,13 @@ ID=$(curl -s -X POST localhost:8001/api/orders | python3 -c 'import sys,json;pri
 curl -N localhost:8002/api/orders/$ID/events   # published_by: backend-1, streamed_by: backend-2
 ```
 
-**Kill the replica serving your stream.** Place an order in the UI, note
+**Kill the replica serving your stream.** Place an order in the UI and, on its
+detail page, note
 "stream: live via backend-N", then:
 ```bash
 docker kill notification_service-backend-N-1   # replace N
 ```
-The card shows a reconnect, lands on the other replica, catches up from the
+The page shows a reconnect, lands on the other replica, catches up from the
 snapshot and finishes. Bring the replica back with
 `docker start notification_service-backend-N-1`.
 
@@ -180,15 +191,20 @@ docker compose exec redis redis-cli client list type pubsub   # one line per API
 backend/app/main.py        API, mock worker, SSE endpoint
 backend/app/broker.py      Shared Pub/Sub subscriber with per-client fan-out
 frontend/src/useOrderEvents.js   EventSource client: backoff, watchdog, terminal close
-frontend/src/App.jsx       Order UI
+frontend/src/App.jsx       Routes: / (order list) and /orders/{id} (order detail)
+frontend/src/OrderList.jsx       Orders placed from this browser, status fetched once
+frontend/src/OrderDetail.jsx     One order, followed live over SSE
+frontend/src/router.jsx    Minimal History API router
+frontend/src/orders.js     The order list in localStorage
 frontend/nginx.conf        Static files, /api load balancing, SSE proxy settings
 docker-compose.yml         Redis, two API replicas, frontend
 ```
 
 ## Possible next steps
 
-- One stream per user carrying all their orders, plus HTTP/2, to get around the
-  browser's limit of about 6 HTTP/1.1 connections per domain.
+- HTTP/2 at nginx, so several tabs on detail pages don't share the browser's 6
+  HTTP/1.1 connections; and one stream per user, if the list should update
+  live too.
 - Automated tests for the subscriber: the subscribe/snapshot race, reference
   counting, slow clients, Redis reconnects.
 - A load test with thousands of concurrent streams.
